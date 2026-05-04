@@ -36,10 +36,91 @@ const isVideoItem = (item: any) => {
   return false;
 };
 
+const isInstagramPermalink = (url: string) => /instagram\.com\/(p|reel|reels|stories)\//.test(url || '');
+
+// Caché compartido para no invocar Apify dos veces (miniatura + modal)
+const apifyResolveCache = new Map<string, Promise<string | null>>();
+const resolveInstagramImage = (url: string): Promise<string | null> => {
+  if (!isInstagramPermalink(url)) return Promise.resolve(null);
+  if (apifyResolveCache.has(url)) return apifyResolveCache.get(url)!;
+  const p = supabase.functions.invoke('extract-instagram', { body: { url } })
+    .then(({ data, error }: any) => (!error && data?.imageUrl) ? data.imageUrl as string : null)
+    .catch(() => null);
+  apifyResolveCache.set(url, p);
+  return p;
+};
+
 const getProxyUrl = (url: string) => {
   if (!url) return '';
-  if (url.includes('wsrv.nl')) return url;
-  return `https://wsrv.nl/?url=${encodeURIComponent(url)}`;
+  if (url.includes('wsrv.nl') || url.includes('weserv.nl')) return url;
+  return `https://wsrv.nl/?url=${encodeURIComponent(url)}&n=-1`;
+};
+
+const getAnonymousProxyUrl = (url: string) => {
+  if (!url) return '';
+  if (url.includes('wsrv.nl') || url.includes('weserv.nl')) return url;
+  return `https://images.weserv.nl/?url=${encodeURIComponent(url.replace(/^https?:\/\//, ''))}&n=-1`;
+};
+
+const isProxiedImageUrl = (url: string) => url.includes('wsrv.nl') || url.includes('weserv.nl');
+
+const getImageFallbackSources = (url: string) => Array.from(new Set([
+  getProxyUrl(url),
+  getAnonymousProxyUrl(url),
+  url,
+].filter(Boolean)));
+
+const setNextImageFallback = (img: HTMLImageElement, originalUrl: string) => {
+  const sources = getImageFallbackSources(originalUrl);
+  const currentStep = Number(img.dataset.fallbackStep || '0');
+  const nextStep = currentStep + 1;
+
+  if (nextStep < sources.length) {
+    const nextSrc = sources[nextStep];
+    img.dataset.fallbackStep = String(nextStep);
+    if (isProxiedImageUrl(nextSrc)) img.crossOrigin = 'anonymous';
+    else img.removeAttribute('crossorigin');
+    img.src = nextSrc;
+    return true;
+  }
+
+  img.style.opacity = '0.3';
+  return false;
+};
+
+const isMostlyBlackImage = (img: HTMLImageElement) => {
+  if (!img.naturalWidth || !img.naturalHeight || typeof document === 'undefined') return false;
+  try {
+    const canvas = document.createElement('canvas');
+    const size = 24;
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return false;
+    ctx.drawImage(img, 0, 0, size, size);
+    const pixels = ctx.getImageData(0, 0, size, size).data;
+    let dark = 0;
+    for (let i = 0; i < pixels.length; i += 4) {
+      const brightness = pixels[i] + pixels[i + 1] + pixels[i + 2];
+      if (pixels[i + 3] < 12 || brightness < 42) dark += 1;
+    }
+    return dark / (pixels.length / 4) > 0.92;
+  } catch (_) {
+    return false;
+  }
+};
+
+// Cadena de fallbacks: Apify URL → proxy anónimo → proxy alternativo → URL directa
+const handleImgFallback = (e: React.SyntheticEvent<HTMLImageElement>, originalUrl: string) => {
+  setNextImageFallback(e.currentTarget, originalUrl);
+};
+
+const handleThumbnailLoad = (e: React.SyntheticEvent<HTMLImageElement>, originalUrl: string) => {
+  const img = e.currentTarget;
+  if (!isProxiedImageUrl(img.currentSrc || img.src)) return;
+  requestAnimationFrame(() => {
+    if (isMostlyBlackImage(img)) setNextImageFallback(img, originalUrl);
+  });
 };
 
 const NEON_COLORS = ['#39ff14', '#ff00ff', '#00ffff', '#ffff00', '#ff0000', '#00ff00', '#ff00aa', '#ff5500'];
@@ -60,11 +141,26 @@ const getPhotoNeonStyle = (photo: any) => {
 function PhotoCardMiniature({ photo, onExpand, onReaction, onHide, onDelete, onSave, userReaction, isStaff, onReport }: any) {
   const { user } = useAuth();
   const { toast } = useToast();
-  const targetUrl = photo.thumbnail_url || photo.image_url;
+  const initialTargetUrl = photo.thumbnail_url || photo.image_url;
+  const [resolvedTargetUrl, setResolvedTargetUrl] = useState(initialTargetUrl);
   const neonStyle = getPhotoNeonStyle(photo);
   const hasNeon = Object.keys(neonStyle).length > 0;
+  const targetUrl = resolvedTargetUrl || initialTargetUrl;
   
   const isOwner = user?.id === photo.user_id;
+
+  useEffect(() => {
+    let active = true;
+    setResolvedTargetUrl(initialTargetUrl);
+    const source = isInstagramPermalink(initialTargetUrl)
+      ? initialTargetUrl
+      : (isInstagramPermalink(photo.content_url) ? photo.content_url : null);
+    if (!source) return;
+    resolveInstagramImage(source).then(img => {
+      if (active && img) setResolvedTargetUrl(img);
+    });
+    return () => { active = false; };
+  }, [initialTargetUrl, photo.content_url]);
 
   return (
     <div 
@@ -75,20 +171,29 @@ function PhotoCardMiniature({ photo, onExpand, onReaction, onHide, onDelete, onS
       style={neonStyle}
       onClick={onExpand}
     >
-      <div className="relative w-full h-full overflow-hidden rounded-xl bg-black flex items-center justify-center min-h-[150px]">
+      <div className="relative w-full overflow-hidden rounded-xl bg-black">
         <img 
           src={getProxyUrl(targetUrl)} 
           alt={photo.caption || "Foto"} 
-          referrerPolicy="no-referrer"
           crossOrigin="anonymous"
-          className="w-full h-auto object-cover rounded-xl transition-transform duration-500 group-hover:scale-105" 
+          referrerPolicy="no-referrer"
+          data-fallback-step="0"
+          className="block w-full h-auto rounded-xl transition-transform duration-500 group-hover:scale-105" 
           loading="lazy" 
-          onError={(e) => {
-            if (!e.currentTarget.src.includes('wsrv.nl')) return;
-            e.currentTarget.src = targetUrl;
-          }}
+          onLoad={(e) => handleThumbnailLoad(e, targetUrl)}
+          onError={(e) => handleImgFallback(e, targetUrl)}
         />
         
+        {/* Botón Reportar siempre visible en miniaturas */}
+        {user && !isOwner && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onReport(); }}
+            className="absolute top-2 right-2 p-1 bg-black/60 backdrop-blur-sm rounded-md text-white/80 hover:text-destructive transition-colors z-30 opacity-80 hover:opacity-100"
+            title="Reportar imagen"
+          >
+            <Flag className="w-3 h-3" />
+          </button>
+        )}
         <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex flex-col justify-between p-2 sm:p-3 rounded-xl">
           <div className="flex justify-between items-start">
             
@@ -171,10 +276,13 @@ function ExpandedPhotoModal({ photo, onClose, onReaction, onHide, onEdit, onDele
   const [commentText, setCommentText] = useState("");
   const [replyTo, setReplyTo] = useState<{id: string, name: string} | null>(null);
   const [showReport, setShowReport] = useState(false);
+  const [reportingComment, setReportingComment] = useState<{ userId: string; userName: string; commentId: string } | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(photo.caption || photo.title || "");
   
-  const targetUrl = photo.thumbnail_url || photo.image_url;
+  const initialTargetUrl = photo.thumbnail_url || photo.image_url;
+  const [resolvedTargetUrl, setResolvedTargetUrl] = useState(initialTargetUrl);
+  const targetUrl = resolvedTargetUrl || initialTargetUrl;
   const originalUrl = photo.content_url || targetUrl;
   const neonStyle = getPhotoNeonStyle(photo);
   const isOwner = user?.id === photo.user_id;
@@ -185,6 +293,19 @@ function ExpandedPhotoModal({ photo, onClose, onReaction, onHide, onEdit, onDele
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = 'auto'; };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    setResolvedTargetUrl(initialTargetUrl);
+    const source = isInstagramPermalink(initialTargetUrl)
+      ? initialTargetUrl
+      : (isInstagramPermalink(photo.content_url) ? photo.content_url : null);
+    if (!source) return;
+    resolveInstagramImage(source).then(img => {
+      if (active && img) setResolvedTargetUrl(img);
+    });
+    return () => { active = false; };
+  }, [initialTargetUrl, photo.content_url]);
 
   const fetchComments = async () => {
     const { data: rawComments } = await supabase.from("social_comments").select("*").eq("content_id", photo.id).order("created_at", { ascending: true });
@@ -224,7 +345,9 @@ function ExpandedPhotoModal({ photo, onClose, onReaction, onHide, onEdit, onDele
     } catch (e) { }
   };
 
-  const isEmbed = !photo.thumbnail_url && photo.target_type === 'social_content' && photo.platform === 'instagram' && !photo.content_url?.includes('.jpg') && !photo.content_url?.includes('.png');
+  // Solo usamos iframe si NO tenemos ninguna URL de imagen real (ni thumbnail, ni resuelta por Apify)
+  const hasRealImage = !!photo.thumbnail_url || (resolvedTargetUrl && resolvedTargetUrl !== initialTargetUrl);
+  const isEmbed = !hasRealImage && photo.target_type === 'social_content' && photo.platform === 'instagram' && !photo.content_url?.includes('.jpg') && !photo.content_url?.includes('.png');
   const embedSrc = isEmbed ? getEmbedUrl(photo.content_url, photo.platform) : null;
 
   if (typeof document === "undefined") return null;
@@ -248,9 +371,9 @@ function ExpandedPhotoModal({ photo, onClose, onReaction, onHide, onEdit, onDele
              <iframe src={embedSrc} className="w-full h-full object-contain rounded" allowFullScreen />
           ) : (
              <img 
-               src={getProxyUrl(targetUrl)} alt={photo.caption} referrerPolicy="no-referrer" crossOrigin="anonymous"
+               src={getProxyUrl(targetUrl)} alt={photo.caption} referrerPolicy="no-referrer" crossOrigin="anonymous" data-fallback-step="0"
                className="w-auto h-full max-w-full object-contain rounded shadow-2xl" 
-               onError={(e) => { if (!e.currentTarget.src.includes('wsrv.nl')) return; e.currentTarget.src = targetUrl; }}
+               onError={(e) => handleImgFallback(e, targetUrl)}
              />
           )}
         </div>
@@ -292,7 +415,7 @@ function ExpandedPhotoModal({ photo, onClose, onReaction, onHide, onEdit, onDele
                 </div>
               ) : (
                 comments.map(c => (
-                  <div key={c.id} className={cn("group flex items-start gap-2 text-[10px] font-body", c.parent_id && "ml-4 border-l border-white/10 pl-2")}>
+                  <div key={c.id} id={`comment-${c.id}`} className={cn("group flex items-start gap-2 text-[10px] font-body", c.parent_id && "ml-4 border-l border-white/10 pl-2")}>
                     <Avatar className="w-5 h-5 shrink-0 mt-1"><AvatarImage src={c.avatar_url || ""} /></Avatar>
                     <div className="flex-1 min-w-0">
                       <div className="bg-white/5 rounded-lg px-2 py-1.5 inline-block max-w-full">
@@ -301,7 +424,11 @@ function ExpandedPhotoModal({ photo, onClose, onReaction, onHide, onEdit, onDele
                       </div>
                       <div className="flex items-center gap-2 mt-1 px-1">
                         <button onClick={() => setReplyTo({id: c.id, name: c.display_name || "Usuario"})} className="text-[8px] text-muted-foreground hover:text-primary font-bold transition-colors">Responder</button>
-                        {/* 🔥 AQUÍ ESTÁ LA CORRECCIÓN: c.id en lugar de commentId 🔥 */}
+                        {user && user.id !== c.user_id && (
+                          <button onClick={() => setReportingComment({ userId: c.user_id, userName: c.display_name || "Anónimo", commentId: c.id })} className="text-muted-foreground hover:text-destructive transition-colors" title="Reportar comentario">
+                            <Flag className="w-2.5 h-2.5" />
+                          </button>
+                        )}
                         {isStaff && <button onClick={() => handleDeleteComment(c.id)} className="text-[8px] text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity">Eliminar</button>}
                       </div>
                     </div>
@@ -375,6 +502,7 @@ function ExpandedPhotoModal({ photo, onClose, onReaction, onHide, onEdit, onDele
         </div>
       </div>
       {showReport && <ReportModal reportedUserId={photo.user_id} reportedUserName={photo.profiles?.display_name || "Anónimo"} postId={photo.id} onClose={() => setShowReport(false)} />}
+      {reportingComment && <ReportModal reportedUserId={reportingComment.userId} reportedUserName={reportingComment.userName} postId={photo.id} commentId={reportingComment.commentId} contentLabel="Comentario" onClose={() => setReportingComment(null)} />}
     </div>,
     document.body
   );
@@ -695,36 +823,70 @@ export default function PhotoWallPage() {
     return sourceTab === "friends" ? photos.filter(p => friendIds.includes(p.user_id)) : photos;
   }, [photos, sourceTab, friendIds]);
 
-  // 🔥 SCROLL MAGIC DESDE GUARDADOS 🔥
+  // 🔥 SCROLL MAGIC DESDE GUARDADOS Y REPORTES 🔥
   const searchParams = new URLSearchParams(location.search);
-  const directPostId = searchParams.get("post");
+  const directPostId = searchParams.get("post") || searchParams.get("focus");
+
+  const directCommentId = searchParams.get("comment");
 
   useEffect(() => {
     if (directPostId && !hasScrolled && displayPhotos.length > 0) {
       const index = displayPhotos.findIndex(item => item.id === directPostId);
       if (index !== -1) {
-        setTimeout(() => {
+        let attempts = 0;
+        const attemptScroll = () => {
+          attempts++;
           const el = document.getElementById(`photo-post-${directPostId}`);
           if (el) {
+            // 1. Scroll al elemento
             const elRect = el.getBoundingClientRect();
             const absoluteTop = elRect.top + window.pageYOffset;
             const middle = absoluteTop - (window.innerHeight / 2) + (elRect.height / 2);
             window.scrollTo({ top: middle, behavior: 'smooth' });
             
-            // Abrimos el modal mágicamente
+            // 2. Highlight arcade neón
+            const cardElement = el.firstElementChild as HTMLElement | null;
+            if (cardElement) {
+               cardElement.classList.add('arcade-report-highlight');
+               setTimeout(() => cardElement.classList.remove('arcade-report-highlight'), 3500);
+            }
+
+            // 3. Abrimos el modal de la foto reportada
             setExpandedPhotoId(directPostId);
+
+            // 4. Si hay comentario, scroll dentro del modal cuando carga
+            if (directCommentId) {
+              let cAttempts = 0;
+              const tryComment = () => {
+                cAttempts++;
+                const cEl = document.getElementById(`comment-${directCommentId}`);
+                if (cEl) {
+                  cEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  cEl.classList.add('arcade-report-highlight');
+                  setTimeout(() => cEl.classList.remove('arcade-report-highlight'), 3500);
+                } else if (cAttempts < 80) {
+                  setTimeout(tryComment, 120);
+                }
+              };
+              setTimeout(tryComment, 600);
+            }
 
             setHasScrolled(true);
             window.history.replaceState({}, '', location.pathname);
+          } else if (attempts < 50) {
+            requestAnimationFrame(attemptScroll);
           } else {
-             setHasScrolled(true);
+            setHasScrolled(true);
           }
-        }, 500); 
+        };
+        requestAnimationFrame(attemptScroll);
+      } else if (hasMore && !isFetching) {
+         fetchContent(false, sort);
       } else {
         setHasScrolled(true);
       }
     }
-  }, [directPostId, displayPhotos, hasScrolled, location.pathname]);
+  }, [directPostId, directCommentId, displayPhotos, hasScrolled, location.pathname, hasMore, isFetching, sort]);
 
   // 🔥 OBSERVER DE SCROLL INFINITO (MASONRY) 🔥
   useEffect(() => {
@@ -841,7 +1003,7 @@ export default function PhotoWallPage() {
                   onSave={handleSaveToProfile}
                   userReaction={userReactions[photo.id]}
                   isStaff={isStaff}
-                  onReport={() => setReportingPhotoIdMini(photo.id)} // Pass callback for reporting from mini card
+                  onReport={() => setReportingPhotoIdMini(photo.id)}
                 />
               </div>
             ))}

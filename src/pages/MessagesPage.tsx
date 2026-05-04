@@ -7,8 +7,9 @@ import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams, useNavigate } from "react-router-dom";
 import { getAvatarBorderStyle, getNameStyle } from "@/lib/profileAppearance";
+import { MEMBERSHIP_LIMITS, MembershipTier } from "@/lib/membershipLimits";
 
 interface Message {
   id: string;
@@ -30,9 +31,85 @@ interface Conversation {
   partnerColorAvatarBorder?: string | null;
 }
 
+// 🔥 Función Traductora Maestra y Cero-Errores 🔥
+const renderFormattedText = (content: string, navigate: ReturnType<typeof useNavigate>) => {
+  const parts = content.split(/(\[COLOR:[^\]]+\]|\[\/COLOR\]|\[LINK:[^\]]+\]|\[\/LINK\]|\n)/g);
+  let currentColor = "";
+  let currentLink = "";
+  
+  return parts.map((part, i) => {
+    if (part === "\n") return <br key={i} />;
+    if (part.startsWith("[COLOR:")) { 
+      currentColor = part.match(/\[COLOR:([^\]]+)\]/)?.[1] || ""; 
+      return null; 
+    }
+    if (part === "[/COLOR]") { currentColor = ""; return null; }
+    if (part.startsWith("[LINK:")) { 
+      currentLink = part.match(/\[LINK:([^\]]+)\]/)?.[1] || ""; 
+      return null; 
+    }
+    if (part === "[/LINK]") { currentLink = ""; return null; }
+    
+    if (!part) return null;
+    
+    if (currentLink) {
+      const linkRaw = currentLink;
+      
+      return (
+        <a 
+          key={i} 
+          href={linkRaw} 
+          className="text-[#3b82f6] hover:underline hover:brightness-125 transition-all cursor-pointer font-bold inline-flex items-center gap-1"
+          onClick={(e) => {
+            e.preventDefault(); // Bloquear la recarga de página al 100%
+            e.stopPropagation();
+            
+            try {
+              // Parseo infalible de URLs
+              const url = new URL(linkRaw, window.location.origin);
+              const targetPath = url.pathname + url.search;
+              const focusId = url.searchParams.get('focus');
+
+              if (window.location.pathname !== url.pathname || window.location.search !== url.search) {
+                navigate(targetPath);
+              } 
+              
+              if (focusId) {
+                setTimeout(() => {
+                  const el = document.getElementById(focusId);
+                  if (el) {
+                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    el.classList.add('ring-2', 'ring-destructive', 'animate-pulse');
+                    setTimeout(() => el.classList.remove('ring-2', 'ring-destructive', 'animate-pulse'), 2000);
+                  }
+                }, 150);
+              }
+            } catch (err) {
+              // Fallback extremo
+              navigate(linkRaw);
+            }
+          }}
+        >
+          <span style={currentColor ? { color: currentColor } : {}}>{part}</span>
+        </a>
+      );
+    }
+    
+    if (currentColor) {
+      return <span key={i} style={{ color: currentColor }}>{part}</span>;
+    }
+    
+    return <span key={i}>{part}</span>;
+  });
+};
+
 export default function MessagesPage() {
-  const { user } = useAuth();
+  const { user, profile, roles, isAdmin, isMasterWeb } = useAuth() as any;
+  const isStaff = isMasterWeb || isAdmin || (roles || []).includes("moderator");
+  const tier = (profile?.membership_tier?.toLowerCase() || 'novato') as MembershipTier;
+  const dmLimit = (isStaff ? MEMBERSHIP_LIMITS.staff : MEMBERSHIP_LIMITS[tier])?.maxDmChars ?? 200;
   const { toast } = useToast();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedPartner, setSelectedPartner] = useState<string | null>(null);
@@ -43,27 +120,41 @@ export default function MessagesPage() {
   const [loading, setLoading] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
 
-  // Efecto para abrir chat desde URL
   useEffect(() => {
     const p = searchParams.get("partner") || searchParams.get("to");
     if (p && user && !selectedPartner) loadMessages(p);
   }, [searchParams, user]);
 
-  // Listener para mensajes nuevos
   useEffect(() => {
     if (!user) return;
     loadConversations();
-    const channel = supabase.channel("messages-sync")
-      .on("postgres_changes", { event: "*", schema: "public", table: "inbox_messages" }, () => {
+    const channel = supabase.channel(`messages-sync-${user.id}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "inbox_messages" }, (payload) => {
+        const row: any = payload.new || payload.old;
+        if (!row) return;
+        if (row.sender_id !== user.id && row.receiver_id !== user.id) return;
         loadConversations();
-        if (selectedPartner) loadMessages(selectedPartner);
+        const partner = selectedPartnerRef.current;
+        if (partner && (row.sender_id === partner || row.receiver_id === partner)) {
+          loadMessages(partner);
+        }
       }).subscribe();
     return () => { supabase.removeChannel(channel); };
-  }, [user, selectedPartner]);
+  }, [user]);
+
+  // Ref siempre actualizada con el partner seleccionado para usarla dentro del canal
+  const selectedPartnerRef = useRef<string | null>(null);
+  useEffect(() => { selectedPartnerRef.current = selectedPartner; }, [selectedPartner]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  const sortMsgs = (arr: Message[]) =>
+    [...arr].sort((a, b) => {
+      const t = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+      return t !== 0 ? t : a.id.localeCompare(b.id);
+    });
 
   const loadConversations = async () => {
     if (!user) return;
@@ -90,7 +181,6 @@ export default function MessagesPage() {
     const convs: Conversation[] = partnerIds.map(pid => {
       const msgs = convMap[pid].msgs;
       const last = msgs[0];
-      // Contamos como no leídos los mensajes donde somos receptores Y is_read es explícitamente false
       const unread = msgs.filter(m => m.receiver_id === user.id && m.is_read === false).length;
       return {
         partnerId: pid,
@@ -115,26 +205,39 @@ export default function MessagesPage() {
       .or(`and(sender_id.eq.${user.id},receiver_id.eq.${partnerId}),and(sender_id.eq.${partnerId},receiver_id.eq.${user.id})`)
       .order("created_at", { ascending: true });
     
-    if (data) setMessages(data as Message[]);
+    if (data) setMessages(sortMsgs(data as Message[]));
 
-    // Marcamos como leído de forma robusta
     await supabase.from("inbox_messages").update({ is_read: true })
       .eq("receiver_id", user.id).eq("sender_id", partnerId).eq("is_read", false);
     
-    // Actualizamos localmente para feedback instantáneo
     setConversations(prev => prev.map(c => c.partnerId === partnerId ? { ...c, unread: 0 } : c));
-    
-    // 🔥 MAGIA AQUÍ: Disparamos una alarma invisible para apagar el número rojo del sobre de inmediato
     window.dispatchEvent(new Event("updateBadges"));
   };
 
   const handleSend = async () => {
     if (!user || !selectedPartner || !newMessage.trim()) return;
+    let content = newMessage.trim();
+    if (content.length > dmLimit) {
+      toast({ title: "Límite alcanzado", description: `Tu membresía permite ${dmLimit} caracteres por mensaje.`, variant: "destructive" });
+      return;
+    }
+    setNewMessage("");
+    // UI optimista
+    const tempId = `temp-${Date.now()}`;
+    setMessages(prev => sortMsgs([...prev, {
+      id: tempId, sender_id: user.id, receiver_id: selectedPartner,
+      content, is_read: false, created_at: new Date().toISOString(),
+    }]));
     const { error } = await supabase.from("inbox_messages").insert({
-      sender_id: user.id, receiver_id: selectedPartner, content: newMessage.trim(), is_read: false
+      sender_id: user.id, receiver_id: selectedPartner, content, is_read: false
     });
-    if (error) toast({ title: "Error", description: error.message, variant: "destructive" });
-    else { setNewMessage(""); loadMessages(selectedPartner); }
+    if (error) {
+      toast({ title: "Error", description: error.message, variant: "destructive" });
+      setMessages(prev => prev.filter(m => m.id !== tempId));
+      setNewMessage(content);
+    } else {
+      loadMessages(selectedPartner);
+    }
   };
 
   const handleSearch = async () => {
@@ -177,7 +280,9 @@ export default function MessagesPage() {
                     <span className="text-xs font-medium truncate block" style={getNameStyle(c.partnerColorName)}>{c.partnerName}</span>
                     {c.unread > 0 && <span className="w-4 h-4 bg-primary rounded-full text-[8px] text-primary-foreground flex items-center justify-center shrink-0 ml-1">{c.unread}</span>}
                   </div>
-                  <p className="text-[10px] text-muted-foreground truncate block w-full">{c.lastMessage}</p>
+                  <p className="text-[10px] text-muted-foreground truncate block w-full">
+                    {c.lastMessage.replace(/\[COLOR:[^\]]+\]|\[\/COLOR\]|\[LINK:[^\]]+\]|\[\/LINK\]/g, '')}
+                  </p>
                 </div>
               </button>
             ))}
@@ -193,16 +298,19 @@ export default function MessagesPage() {
             <div className="flex-1 overflow-y-auto retro-scrollbar p-3 space-y-2">
               {messages.map(m => (
                 <div key={m.id} className={cn("flex", m.sender_id === user?.id ? "justify-end" : "justify-start")}>
-                  <div className={cn("max-w-[75%] rounded-lg px-3 py-2 text-xs break-words", m.sender_id === user?.id ? "bg-primary/20 text-foreground" : "bg-muted text-foreground")}>
-                    {m.content}
+                  <div className={cn("max-w-[75%] rounded-lg px-3 py-2 text-xs break-words whitespace-pre-wrap", m.sender_id === user?.id ? "bg-primary/20 text-foreground" : "bg-muted text-foreground")}>
+                    {renderFormattedText(m.content, navigate)}
                   </div>
                 </div>
               ))}
               <div ref={endRef} />
             </div>
-            <div className="p-2 border-t border-border flex gap-2">
-              <Textarea value={newMessage} onChange={e => setNewMessage(e.target.value)} placeholder="Mensaje..." className="bg-muted text-xs min-h-[40px] max-h-[80px] flex-1" onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }} />
-              <Button size="sm" onClick={handleSend} className="h-auto px-3"><Send className="w-3.5 h-3.5" /></Button>
+            <div className="p-2 border-t border-border flex flex-col gap-1">
+              <div className="flex gap-2">
+                <Textarea value={newMessage} onChange={e => setNewMessage(e.target.value.slice(0, dmLimit))} placeholder="Mensaje..." maxLength={dmLimit} className="bg-muted text-xs min-h-[40px] max-h-[80px] flex-1" onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }} />
+                <Button size="sm" onClick={handleSend} className="h-auto px-3"><Send className="w-3.5 h-3.5" /></Button>
+              </div>
+              <span className={cn("text-[9px] text-right font-pixel", newMessage.length >= dmLimit ? "text-destructive" : "text-muted-foreground")}>{newMessage.length}/{dmLimit}</span>
             </div>
           </div>
         )}

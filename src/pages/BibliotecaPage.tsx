@@ -9,7 +9,8 @@ import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { allGames } from "@/lib/gameLibrary";
 import { supabase } from "@/integrations/supabase/client";
-import { useGameBubble } from "@/contexts/GameBubbleContext"; // 🔥 IMPORTAMOS LA BURBUJA 🔥
+import { useGameBubble } from "@/contexts/GameBubbleContext";
+import { useSearchParams } from "react-router-dom";
 
 type ConsoleType = "nes" | "snes" | "gba" | "n64";
 
@@ -31,19 +32,35 @@ interface LeaderboardScore {
 export default function BibliotecaPage() {
   const { user } = useAuth();
   const { toast } = useToast();
-  const { launchGame } = useGameBubble(); // 🔥 INICIALIZAMOS LA BURBUJA 🔥
+  const { launchGame } = useGameBubble();
+  
+  const [searchParams] = useSearchParams();
+  
+  const initialConsoleParam = searchParams.get("console") as ConsoleType;
+  const initialConsole = consoles.some(c => c.id === initialConsoleParam) ? initialConsoleParam : "snes";
 
-  const [selectedConsole, setSelectedConsole] = useState<ConsoleType>("snes");
+  const [selectedConsole, setSelectedConsole] = useState<ConsoleType>(initialConsole);
   const [searchQuery, setSearchQuery] = useState("");
   
   const [leaderboard, setLeaderboard] = useState<LeaderboardScore[]>([]);
   const [leaderboardColors, setLeaderboardColors] = useState<Record<string, string | null>>({});
 
   const [gameName, setGameName] = useState("");
+  const [suggestConsole, setSuggestConsole] = useState<ConsoleType>("snes");
   const [description, setDescription] = useState("");
   const [sending, setSending] = useState(false);
 
-  // 🔥 LÓGICA DE BÚSQUEDA Y FILTRADO 🔥
+  useEffect(() => {
+    const consoleParam = searchParams.get("console") as ConsoleType;
+    if (consoleParam && consoles.some(c => c.id === consoleParam)) {
+      setSelectedConsole(consoleParam);
+    }
+  }, [searchParams]);
+
+  useEffect(() => {
+    setSuggestConsole(selectedConsole);
+  }, [selectedConsole]);
+
   const currentGames = useMemo(() => {
     return allGames.filter((game) => {
       const matchesSearch = game.name?.toLowerCase().includes(searchQuery.toLowerCase());
@@ -52,7 +69,6 @@ export default function BibliotecaPage() {
     });
   }, [searchQuery, selectedConsole]);
 
-  // 🔥 FUNCIÓN PARA OBTENER EL CORE CORRECTO 🔥
   const getCoreForConsole = (consoleId: string) => {
     const cores: Record<string, string> = {
       nes: "fceumm",
@@ -67,7 +83,6 @@ export default function BibliotecaPage() {
     return cores[consoleId] || "fceumm";
   };
 
-  // 🔥 FETCH DE LEADERBOARD EXACTO DE EMULATORPAGE 🔥
   useEffect(() => {
     const fetchLeaderboard = async () => {
       const { data } = await supabase
@@ -78,7 +93,6 @@ export default function BibliotecaPage() {
         .limit(50);
 
       if (data) {
-        // Deduplicate: keep only highest score per user
         const best: Record<string, LeaderboardScore> = {};
         (data as LeaderboardScore[]).forEach(s => {
           const key = s.user_id;
@@ -103,7 +117,6 @@ export default function BibliotecaPage() {
 
   const consoleInfo = consoles.find((c) => c.id === selectedConsole)!;
 
-  // 🔥 ENVIAR SUGERENCIA AL STAFF COMO UN BOT 🔥
   const handleSuggestSubmit = async () => {
     if (!user) { toast({ title: "Inicia sesión", variant: "destructive" }); return; }
     if (!gameName.trim()) return;
@@ -111,14 +124,33 @@ export default function BibliotecaPage() {
 
     try {
       const { error } = await supabase.from("game_suggestions").insert({
-        user_id: user.id, console_type: selectedConsole, game_name: gameName.trim(), description: description.trim(),
+        user_id: user.id, 
+        console_type: suggestConsole, 
+        game_name: gameName.trim(), 
+        description: description.trim(),
       } as any);
 
       if (error) throw error;
 
-      // Notificar al Staff usando el bot SISTEMA
-      const messageContent = `🤖 [SISTEMA] NUEVA SUGERENCIA DE JUEGO\n\n👤 Usuario: ${user.user_metadata?.username || user.email || 'Anónimo'}\n📧 Email: ${user.email || 'desconocido'}\n🎮 Juego: ${gameName}\n🕹️ Consola: ${selectedConsole.toUpperCase()}\n💬 Motivo / Descripción:\n${description || 'Sin comentario adicional.'}\n\n🔗 ${typeof window !== 'undefined' ? window.location.origin + '/arcade/biblioteca' : ''}`;
-      await supabase.rpc("send_system_staff_message", {
+      // 🔥 MEJORA: Usamos la ruta dinámica real igual que en ReportModal 🔥
+      const targetUrl = typeof window !== 'undefined' 
+        ? `${window.location.pathname}?console=${suggestConsole}` 
+        : `/?console=${suggestConsole}`;
+
+      const messageContent = `[COLOR:#ef4444]🤖 [SISTEMA] NUEVA SUGERENCIA DE JUEGO[/COLOR]
+
+[COLOR:#3b82f6]👤 Usuario: ${user.user_metadata?.username || user.email || 'Anónimo'}[/COLOR]
+[COLOR:#06b6d4]📧 Email: ${user.email || 'desconocido'}[/COLOR]
+
+[COLOR:#eab308]🎮 Juego: ${gameName}[/COLOR]
+[COLOR:#ffffff]🕹️ Consola elegida: ${suggestConsole.toUpperCase()}[/COLOR]
+
+[COLOR:#ffffff]💬 Motivo / Descripción:
+${description || 'Sin comentario adicional.'}[/COLOR]
+
+[COLOR:#3b82f6]🔗 ENLACE:[/COLOR] [LINK:${targetUrl}]Ir a la consola sugerida[/LINK]`;
+
+      await supabase.rpc("send_system_admin_message" as any, {
         p_title: `Sugerencia de juego: ${gameName}`,
         p_content: messageContent,
         p_message_type: 'game_suggestion',
@@ -137,7 +169,6 @@ export default function BibliotecaPage() {
   return (
     <div className="space-y-4 animate-fade-in max-w-7xl mx-auto pb-12 px-4 md:px-0">
       
-      {/* HEADER COPIADO DE EMULATORPAGE */}
       <div className="bg-card border border-neon-green/30 rounded-lg p-4">
         <h1 className="font-pixel text-sm text-neon-green text-glow-green mb-1 flex items-center gap-2">
           <Gamepad2 className="w-4 h-4" /> SALAS DE JUEGO
@@ -145,7 +176,6 @@ export default function BibliotecaPage() {
         <p className="text-xs text-muted-foreground font-body">Selecciona una consola, elige un juego y empieza a jugar.</p>
       </div>
 
-      {/* BOTONES (PESTAÑAS) COPIADOS DE EMULATORPAGE */}
       <div className="flex gap-2 flex-wrap">
         {consoles.map((c) => (
           <Button
@@ -160,7 +190,6 @@ export default function BibliotecaPage() {
         ))}
       </div>
 
-      {/* BARRA DE BÚSQUEDA ADAPTADA AL ESTILO */}
       <div className="relative w-full max-w-sm mt-2">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
         <Input 
@@ -171,7 +200,6 @@ export default function BibliotecaPage() {
         />
       </div>
 
-      {/* TITULO DE JUEGOS Y GRID (5 COLUMNAS) COPIADO DE EMULATORPAGE */}
       <div>
         <h2 className={cn("font-pixel text-xs mb-2 flex items-center gap-1.5 mt-2", consoleInfo.color)}>
           <Gamepad2 className="w-3.5 h-3.5" /> BIBLIOTECA {consoleInfo.label.toUpperCase()}
@@ -184,7 +212,6 @@ export default function BibliotecaPage() {
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
             {currentGames.map((game) => (
-              // 🔥 SOLUCIÓN: Cambiado de <Link> a <div> para que abra con GameBubble sin redireccionar 🔥
               <div
                 key={game.id}
                 onClick={() => launchGame({
@@ -210,10 +237,8 @@ export default function BibliotecaPage() {
         )}
       </div>
 
-      {/* ZONA INFERIOR (LEADERBOARD Y SUGERENCIAS) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
         
-        {/* LEADERBOARD EXACTO AL EMULATORPAGE */}
         <div className="bg-card border border-neon-yellow/20 rounded-lg overflow-hidden h-fit">
           <div className="px-3 py-2 border-b border-border flex items-center gap-2">
             <Trophy className="w-3.5 h-3.5 text-neon-yellow" />
@@ -236,28 +261,43 @@ export default function BibliotecaPage() {
           )}
         </div>
 
-        {/* SUGERENCIAS EXACTAS AL EMULATORPAGE */}
         <div className="bg-card border border-neon-cyan/20 rounded-lg p-3 space-y-2 h-fit">
           <h3 className="font-pixel text-[10px] text-neon-cyan flex items-center gap-1">
             <Lightbulb className="w-3 h-3" /> SUGERIR UN JUEGO
           </h3>
-          <Input placeholder="Nombre del juego" value={gameName} onChange={e => setGameName(e.target.value)} className="h-7 bg-muted text-xs font-body" />
           
-          {/* 🔥 LÍMITE DE 500 CARACTERES APLICADO 🔥 */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            <Input 
+              placeholder="Nombre del juego" 
+              value={gameName} 
+              onChange={e => setGameName(e.target.value)} 
+              className="h-8 bg-muted text-xs font-body" 
+            />
+            <select
+              value={suggestConsole}
+              onChange={(e) => setSuggestConsole(e.target.value as ConsoleType)}
+              className="h-8 rounded-md border border-border bg-muted text-xs font-body px-2 text-foreground outline-none focus:border-neon-cyan/50 transition-colors"
+            >
+              {consoles.map(c => (
+                <option key={c.id} value={c.id}>{c.label}</option>
+              ))}
+            </select>
+          </div>
+          
           <div className="space-y-1">
             <Textarea 
               placeholder="¿Por qué lo recomiendas? (opcional)" 
               value={description} 
               onChange={e => setDescription(e.target.value)} 
               maxLength={500}
-              className="bg-muted text-xs font-body min-h-[40px]" 
+              className="bg-muted text-xs font-body min-h-[60px]" 
             />
             <div className="text-[9px] text-muted-foreground text-right">
               {description.length}/500 caracteres
             </div>
           </div>
 
-          <Button size="sm" onClick={handleSuggestSubmit} disabled={sending || !gameName.trim()} className="text-xs gap-1 h-7 w-full">
+          <Button size="sm" onClick={handleSuggestSubmit} disabled={sending || !gameName.trim()} className="text-xs gap-1 h-8 w-full">
             <Send className="w-3 h-3" /> {sending ? "Enviando..." : "Enviar sugerencia"}
           </Button>
         </div>

@@ -25,17 +25,18 @@ interface ReportModalProps {
   reportedUserId: string;
   reportedUserName: string;
   postId?: string;
+  commentId?: string;
+  contentLabel?: string;
   onClose: () => void;
 }
 
-export default function ReportModal({ reportedUserId, reportedUserName, postId, onClose }: ReportModalProps) {
+export default function ReportModal({ reportedUserId, reportedUserName, postId, commentId, contentLabel, onClose }: ReportModalProps) {
   const { user } = useAuth();
   const { toast } = useToast();
   const [reason, setReason] = useState(REPORT_REASONS[0]);
   const [details, setDetails] = useState("");
   const [sending, setSending] = useState(false);
 
-  // Congelar el scroll del fondo mientras el modal de reporte está abierto
   useEffect(() => {
     document.body.style.overflow = 'hidden';
     return () => { document.body.style.overflow = 'auto'; };
@@ -53,20 +54,28 @@ export default function ReportModal({ reportedUserId, reportedUserName, postId, 
         
       const reporterName = profile?.display_name || 'Usuario';
       const reporterEmail = user.email || 'desconocido';
-      const targetUrl = typeof window !== 'undefined'
-        ? `${window.location.origin}${window.location.pathname}${window.location.search}${postId ? (window.location.search ? '&' : '?') + 'focus=' + postId : ''}`
-        : '';
+      
+      // URL relativa con focus + comment para deep-link y scroll automático
+      const params = new URLSearchParams();
+      if (postId) params.set('focus', postId);
+      if (commentId) params.set('comment', commentId);
+      const qs = params.toString();
+      const targetUrl = `${window.location.pathname}${qs ? '?' + qs : ''}`;
 
-      const systemTicket = `🚨 NUEVO REPORTE 🚨
+      const kindLabel = contentLabel || (commentId ? 'Comentario' : (postId ? 'Publicación' : 'Perfil'));
 
-👤 EMISOR: ${reporterName} (${reporterEmail})
-🎯 REPORTADO: ${reportedUserName}
-📝 MOTIVO: ${reason}
-${postId ? '🆔 POST ID: ' + postId : '📍 Reporte de Perfil'}
-🔗 ENLACE: ${targetUrl}
+      const systemTicket = `[COLOR:#ef4444]🚨 NUEVO REPORTE 🚨[/COLOR]
 
-💬 DETALLES:
-${details.trim() || '— Sin detalles adicionales —'}
+[COLOR:#3b82f6]👤 EMISOR: ${reporterName} (${reporterEmail})[/COLOR]
+[COLOR:#06b6d4]🎯 REPORTADO: ${reportedUserName}[/COLOR]
+[COLOR:#eab308]📝 MOTIVO: ${reason}[/COLOR]
+[COLOR:#a78bfa]📂 TIPO: ${kindLabel}[/COLOR]
+${postId ? '[COLOR:#ffffff]🆔 POST ID: ' + postId + '[/COLOR]' : ''}
+${commentId ? '[COLOR:#ffffff]💭 COMMENT ID: ' + commentId + '[/COLOR]' : ''}
+[COLOR:#3b82f6]🔗 ENLACE:[/COLOR] [LINK:${targetUrl}]Ver contenido reportado[/LINK]
+
+[COLOR:#ffffff]💬 DETALLES:
+${details.trim() || '— Sin detalles adicionales —'}[/COLOR]
 
 ———————————————
 Requiere revisión del staff.`;
@@ -98,10 +107,8 @@ Requiere revisión del staff.`;
 
   if (typeof document === "undefined") return null;
 
-  // 🔥 Magia: createPortal teletransporta el modal al Body 🔥
   return createPortal(
     <div className="fixed inset-0 z-[9999] bg-black/80 backdrop-blur-md animate-fade-in" onClick={onClose}>
-      
       <div 
         className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[95%] max-w-md bg-card border border-destructive/40 rounded-xl p-5 shadow-[0_0_50px_rgba(220,38,38,0.15)] animate-scale-in flex flex-col max-h-[90vh]" 
         onClick={e => e.stopPropagation()}
