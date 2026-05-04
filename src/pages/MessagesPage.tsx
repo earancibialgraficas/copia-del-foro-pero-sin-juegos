@@ -31,7 +31,27 @@ interface Conversation {
   partnerColorAvatarBorder?: string | null;
 }
 
-// 🔥 Función Traductora Maestra y Cero-Errores 🔥
+// 🔥 Función para formatear fecha CLAVADA 100% EN HORA CHILENA 🔥
+const formatMsgDate = (dateStr: string) => {
+  const safeDateStr = dateStr.includes('T') && !dateStr.endsWith('Z') && !dateStr.includes('+') ? dateStr + 'Z' : dateStr;
+  const date = new Date(safeDateStr);
+  
+  // Opciones forzadas a Chile
+  const timeOptions: Intl.DateTimeFormatOptions = { hour: '2-digit', minute: '2-digit', timeZone: 'America/Santiago' };
+  const dateOptions: Intl.DateTimeFormatOptions = { day: '2-digit', month: '2-digit', timeZone: 'America/Santiago' };
+  
+  // Revisamos si "hoy" en Chile es el mismo "día" del mensaje en Chile
+  const todayChile = new Date().toLocaleDateString('en-US', { timeZone: 'America/Santiago' });
+  const msgDateChile = date.toLocaleDateString('en-US', { timeZone: 'America/Santiago' });
+  
+  const timeStr = date.toLocaleTimeString('es-CL', timeOptions);
+  
+  if (todayChile === msgDateChile) return timeStr;
+  
+  const dayMonth = date.toLocaleDateString('es-CL', dateOptions);
+  return `${dayMonth} ${timeStr}`;
+};
+
 const renderFormattedText = (content: string, navigate: ReturnType<typeof useNavigate>) => {
   const parts = content.split(/(\[COLOR:[^\]]+\]|\[\/COLOR\]|\[LINK:[^\]]+\]|\[\/LINK\]|\n)/g);
   let currentColor = "";
@@ -49,43 +69,23 @@ const renderFormattedText = (content: string, navigate: ReturnType<typeof useNav
       return null; 
     }
     if (part === "[/LINK]") { currentLink = ""; return null; }
-    
     if (!part) return null;
     
     if (currentLink) {
       const linkRaw = currentLink;
-      
       return (
         <a 
           key={i} 
           href={linkRaw} 
           className="text-[#3b82f6] hover:underline hover:brightness-125 transition-all cursor-pointer font-bold inline-flex items-center gap-1"
           onClick={(e) => {
-            e.preventDefault(); // Bloquear la recarga de página al 100%
+            e.preventDefault();
             e.stopPropagation();
-            
             try {
-              // Parseo infalible de URLs
               const url = new URL(linkRaw, window.location.origin);
               const targetPath = url.pathname + url.search;
-              const focusId = url.searchParams.get('focus');
-
-              if (window.location.pathname !== url.pathname || window.location.search !== url.search) {
-                navigate(targetPath);
-              } 
-              
-              if (focusId) {
-                setTimeout(() => {
-                  const el = document.getElementById(focusId);
-                  if (el) {
-                    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    el.classList.add('ring-2', 'ring-destructive', 'animate-pulse');
-                    setTimeout(() => el.classList.remove('ring-2', 'ring-destructive', 'animate-pulse'), 2000);
-                  }
-                }, 150);
-              }
+              navigate(targetPath);
             } catch (err) {
-              // Fallback extremo
               navigate(linkRaw);
             }
           }}
@@ -98,7 +98,6 @@ const renderFormattedText = (content: string, navigate: ReturnType<typeof useNav
     if (currentColor) {
       return <span key={i} style={{ color: currentColor }}>{part}</span>;
     }
-    
     return <span key={i}>{part}</span>;
   });
 };
@@ -120,6 +119,18 @@ export default function MessagesPage() {
   const [loading, setLoading] = useState(true);
   const endRef = useRef<HTMLDivElement>(null);
 
+  const selectedPartnerRef = useRef<string | null>(null);
+  useEffect(() => { selectedPartnerRef.current = selectedPartner; }, [selectedPartner]);
+
+  // 🔥 ORDENACIÓN CRONOLÓGICA ABSOLUTA 🔥
+  const sortMsgs = (arr: Message[]) =>
+    [...arr].sort((a, b) => {
+      const timeA = new Date(a.created_at).getTime();
+      const timeB = new Date(b.created_at).getTime();
+      if (timeA !== timeB) return timeA - timeB;
+      return a.id.localeCompare(b.id);
+    });
+
   useEffect(() => {
     const p = searchParams.get("partner") || searchParams.get("to");
     if (p && user && !selectedPartner) loadMessages(p);
@@ -128,33 +139,30 @@ export default function MessagesPage() {
   useEffect(() => {
     if (!user) return;
     loadConversations();
+    
     const channel = supabase.channel(`messages-sync-${user.id}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "inbox_messages" }, (payload) => {
-        const row: any = payload.new || payload.old;
-        if (!row) return;
-        if (row.sender_id !== user.id && row.receiver_id !== user.id) return;
-        loadConversations();
-        const partner = selectedPartnerRef.current;
-        if (partner && (row.sender_id === partner || row.receiver_id === partner)) {
-          loadMessages(partner);
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "inbox_messages" }, (payload) => {
+        const newMsg = payload.new as Message;
+        if (!newMsg) return;
+        
+        if (newMsg.sender_id === user.id || newMsg.receiver_id === user.id) {
+          loadConversations();
+          const activePartner = selectedPartnerRef.current;
+          if (activePartner && (newMsg.sender_id === activePartner || newMsg.receiver_id === activePartner)) {
+             setMessages(prev => {
+                if (prev.find(m => m.id === newMsg.id)) return prev;
+                return sortMsgs([...prev, newMsg]);
+             });
+          }
         }
       }).subscribe();
+      
     return () => { supabase.removeChannel(channel); };
   }, [user]);
-
-  // Ref siempre actualizada con el partner seleccionado para usarla dentro del canal
-  const selectedPartnerRef = useRef<string | null>(null);
-  useEffect(() => { selectedPartnerRef.current = selectedPartner; }, [selectedPartner]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
-
-  const sortMsgs = (arr: Message[]) =>
-    [...arr].sort((a, b) => {
-      const t = new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
-      return t !== 0 ? t : a.id.localeCompare(b.id);
-    });
 
   const loadConversations = async () => {
     if (!user) return;
@@ -218,25 +226,33 @@ export default function MessagesPage() {
     if (!user || !selectedPartner || !newMessage.trim()) return;
     let content = newMessage.trim();
     if (content.length > dmLimit) {
-      toast({ title: "Límite alcanzado", description: `Tu membresía permite ${dmLimit} caracteres por mensaje.`, variant: "destructive" });
+      toast({ title: "Límite alcanzado", description: `Máximo ${dmLimit} caracteres.`, variant: "destructive" });
       return;
     }
     setNewMessage("");
-    // UI optimista
+
     const tempId = `temp-${Date.now()}`;
-    setMessages(prev => sortMsgs([...prev, {
-      id: tempId, sender_id: user.id, receiver_id: selectedPartner,
-      content, is_read: false, created_at: new Date().toISOString(),
-    }]));
-    const { error } = await supabase.from("inbox_messages").insert({
+    const optimisticMsg: Message = {
+      id: tempId, 
+      sender_id: user.id, 
+      receiver_id: selectedPartner,
+      content, 
+      is_read: false, 
+      created_at: new Date().toISOString(),
+    };
+
+    setMessages(prev => sortMsgs([...prev, optimisticMsg]));
+
+    const { error, data } = await supabase.from("inbox_messages").insert({
       sender_id: user.id, receiver_id: selectedPartner, content, is_read: false
-    });
+    }).select().single();
+
     if (error) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
       setMessages(prev => prev.filter(m => m.id !== tempId));
       setNewMessage(content);
-    } else {
-      loadMessages(selectedPartner);
+    } else if (data) {
+      setMessages(prev => sortMsgs(prev.map(m => m.id === tempId ? data : m)));
     }
   };
 
@@ -295,10 +311,14 @@ export default function MessagesPage() {
               <button onClick={() => setSelectedPartner(null)} className="md:hidden text-muted-foreground"><ArrowLeft className="w-4 h-4" /></button>
               <span className="text-xs font-medium truncate" style={getNameStyle(conversations.find(c => c.partnerId === selectedPartner)?.partnerColorName)}>{conversations.find(c => c.partnerId === selectedPartner)?.partnerName || "Chat"}</span>
             </div>
-            <div className="flex-1 overflow-y-auto retro-scrollbar p-3 space-y-2">
+            <div className="flex-1 overflow-y-auto retro-scrollbar p-3 space-y-4">
               {messages.map(m => (
-                <div key={m.id} className={cn("flex", m.sender_id === user?.id ? "justify-end" : "justify-start")}>
-                  <div className={cn("max-w-[75%] rounded-lg px-3 py-2 text-xs break-words whitespace-pre-wrap", m.sender_id === user?.id ? "bg-primary/20 text-foreground" : "bg-muted text-foreground")}>
+                <div key={m.id} className={cn("flex flex-col", m.sender_id === user?.id ? "items-end" : "items-start")}>
+                  <span className="text-[9px] text-muted-foreground mb-1 px-1">
+                    {m.sender_id === user?.id ? "Tú" : conversations.find(c => c.partnerId === selectedPartner)?.partnerName} • {formatMsgDate(m.created_at)}
+                  </span>
+                  
+                  <div className={cn("max-w-[80%] rounded-lg px-3 py-2 text-xs break-words whitespace-pre-wrap border shadow-sm", m.sender_id === user?.id ? "bg-primary/10 border-primary/20 text-foreground" : "bg-muted/50 border-border text-foreground")}>
                     {renderFormattedText(m.content, navigate)}
                   </div>
                 </div>
@@ -307,8 +327,8 @@ export default function MessagesPage() {
             </div>
             <div className="p-2 border-t border-border flex flex-col gap-1">
               <div className="flex gap-2">
-                <Textarea value={newMessage} onChange={e => setNewMessage(e.target.value.slice(0, dmLimit))} placeholder="Mensaje..." maxLength={dmLimit} className="bg-muted text-xs min-h-[40px] max-h-[80px] flex-1" onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }} />
-                <Button size="sm" onClick={handleSend} className="h-auto px-3"><Send className="w-3.5 h-3.5" /></Button>
+                <Textarea value={newMessage} onChange={e => setNewMessage(e.target.value.slice(0, dmLimit))} placeholder="Mensaje..." maxLength={dmLimit} className="bg-muted text-xs min-h-[40px] max-h-[80px] flex-1 resize-none" onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }} />
+                <Button size="sm" onClick={handleSend} className="h-auto px-3 bg-neon-cyan text-black hover:bg-neon-cyan/80"><Send className="w-3.5 h-3.5" /></Button>
               </div>
               <span className={cn("text-[9px] text-right font-pixel", newMessage.length >= dmLimit ? "text-destructive" : "text-muted-foreground")}>{newMessage.length}/{dmLimit}</span>
             </div>

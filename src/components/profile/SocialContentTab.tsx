@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 const TikTokIcon = ({ className }: { className?: string }) => (
   <svg viewBox="0 0 352.28 398.67" className={className} fill="currentColor">
     <path d="M137.17 156.98v-15.56c-5.34-.73-10.76-1.18-16.29-1.18C54.23 140.24 0 194.47 0 261.13c0 40.9 20.43 77.09 51.61 98.97-20.12-21.6-32.46-50.53-32.46-82.31 0-65.7 52.69-119.28 118.03-120.81Z"/>
-    <path d="M140.02 333c29.74 0 54-23.66 55.1-53.13l.11-263.2h48.08c-1-5.41-1.55-10.97-1.55-16.67h-65.67l-.11 263.2c-1.1 29.47-25.36 53.13-55.1 53.13-9.24 0-17.95-2.31-25.61-6.34C105.3 323.9 121.6 333 140.02 333ZM333.13 106V91.37c-18.34 0-35.43-5.45-49.76-14.8 12.76 14.65 30.09 25.22 49.76 29.43Z"/>
+    <path d="M140.02 333c29.74 0 54-23.66 55.1-53.13l.11-263.2h48.08c-1-5.41-1.55-10.97-1.55-16.67h-65.67l-.11 263.2c-1.1 29.47-25.36 53.13-55.1 53.13-9.24 0-17.95-2.31-25.61-6.34C105.3 323.9 121.6 333 140.02 333ZM333.13 106V91.37c-18.34 0-35.43-49.76-14.8 12.76 14.65 30.09 25.22 49.76 29.43Z"/>
     <path d="M283.38 76.57c-13.98-16.05-22.47-37-22.47-59.91h-17.59c4.63 25.02 19.48 46.49 40.06 59.91ZM120.88 205.92c-30.44 0-55.21 24.77-55.21 55.21 0 21.2 12.03 39.62 29.6 48.86-6.55-9.08-10.45-20.18-10.45-32.2 0-30.44 24.77-55.21 55.21-55.21 5.68 0 11.13.94 16.29 2.55v-67.05c-5.34-.73-10.76-1.18-16.29-1.18-.96 0-1.9.05-2.85.07v51.49c-5.16-1.61-10.61-2.55-16.29-2.55Z"/>
     <path d="M333.13 106v51.04c-34.05 0-65.61-10.89-91.37-29.38v133.47c0 66.66-54.23 120.88-120.88 120.88-25.76 0-49.64-8.12-69.28-21.91 22.08 23.71 53.54 38.57 88.42 38.57 66.66 0 120.88-54.23 120.88-120.88V144.33c25.76 18.49 57.32 29.38 91.37 29.38v-65.68c-6.57 0-12.97-.71-19.14-2.03Z"/>
     <path d="M241.76 261.13V127.66c25.76 18.49 57.32 29.38 91.37 29.38V106c-19.67-4.21-37-14.77-49.76-29.43-20.58-13.42-35.43-34.88-40.06-59.91h-48.08l-.11 263.2c-1.1 29.47-25.36 53.13-55.1 53.13-18.42 0-34.72-9.1-44.75-23.01-17.57-9.25-29.6-27.67-29.6-48.86 0-30.44 24.77-55.21 55.21-55.21 5.68 0 11.13.94 16.29 2.55v-51.49C71.83 158.5 19.14 212.08 19.14 277.78c0 31.78 12.34 60.71 32.46 82.31C71.23 373.87 95.12 382 120.88 382c66.65 0 120.88-54.23 120.88-120.88Z"/>
@@ -33,7 +33,16 @@ const getProxyUrl = (url: string) => {
 };
 
 const getSocialThumbnail = (item: any) => {
-  if (item.target_type === 'photo' || item.image_url) return getProxyUrl(item.image_url);
+  if (item.target_type === 'photo' || item.image_url) {
+     let origUrl = item.image_url || '';
+     // 🔥 TRUCO DE INSTAGRAM PARA IMÁGENES GUARDADAS EN TABLA PHOTOS 🔥
+     if (origUrl.includes('instagram.com') && !origUrl.match(/\.(jpeg|jpg|gif|png|webp)/i)) {
+       const igMatch = origUrl.match(/instagram\.com\/(?:p|reel|reels)\/([\w-]+)/);
+       if (igMatch) return getProxyUrl(`https://www.instagram.com/p/${igMatch[1]}/media/?size=l`);
+     }
+     return getProxyUrl(item.image_url);
+  }
+  
   let origContentUrl = item.content_url || '';
   const isVideoExt = (url: string) => url && url.match(/\.(mp4|webm|ogg)/i);
   const idSeed = getSeedFromId(item.id);
@@ -44,6 +53,7 @@ const getSocialThumbnail = (item: any) => {
   if (item.tiktok_thumb) return getProxyUrl(item.tiktok_thumb);
   if (item.facebook_thumb) return getProxyUrl(item.facebook_thumb);
 
+  // 🔥 TRUCO DE INSTAGRAM PARA REDES SOCIALES 🔥
   if (origContentUrl.includes('instagram.com')) {
      const igMatch = origContentUrl.match(/instagram\.com\/(?:p|reel|reels)\/([\w-]+)/);
      if (igMatch) return getProxyUrl(`https://www.instagram.com/p/${igMatch[1]}/media/?size=l`);
@@ -56,13 +66,17 @@ const getSocialThumbnail = (item: any) => {
 };
 
 const isVideoItem = (item: any) => {
-  if (item.target_type === 'photo') return false;
+  if (item.target_type === 'photo' || item.content_type === 'photo') return false;
   const url = item.content_url || '';
-  return Boolean(url.match(/\.(mp4|webm|ogg)/i) || url.includes("youtube.com") || url.includes("youtu.be") || url.includes("tiktok.com") || url.includes("instagram.com") || url.includes("facebook.com") || url.includes("fb.watch"));
+  
+  // Instagram posts son fotos, no videos
+  if (url.includes("instagram.com") && !url.includes("/reel/") && !url.includes("/reels/")) return false;
+  
+  return Boolean(url.match(/\.(mp4|webm|ogg)/i) || url.includes("youtube.com") || url.includes("youtu.be") || url.includes("tiktok.com") || url.includes("facebook.com") || url.includes("fb.watch"));
 };
 
 const getPlatformIcon = (platform: string, targetType: string, className: string = "w-4 h-4") => {
-  if (targetType === 'photo') return <Camera className={cn(className, "text-neon-cyan")} />;
+  if (targetType === 'photo' || platform === 'photo') return <Camera className={cn(className, "text-neon-cyan")} />;
   switch (platform?.toLowerCase()) {
     case "youtube": return <Youtube className={cn(className, "text-[#ff0000]")} />;
     case "instagram": return <Instagram className={cn(className, "text-[#e1306c]")} />;
@@ -182,42 +196,79 @@ export default function SocialContentTab({ profile, user, onEditNetworks, limits
     if (!newUrl.trim()) return;
     setAdding(true);
     
-    let platform = "web";
-    let contentType = "post";
-    const url = newUrl.toLowerCase();
+    const url = newUrl.trim();
+    const lowerUrl = url.toLowerCase();
     
-    if (url.includes("youtube.com") || url.includes("youtu.be")) {
-      platform = "youtube";
-      contentType = url.includes("shorts") ? "reel" : "video";
-    } else if (url.includes("instagram.com")) {
-      platform = "instagram";
-      contentType = (url.includes("/reel/") || url.includes("/reels/")) ? "reel" : "post";
-    } else if (url.includes("tiktok.com")) {
-      platform = "tiktok";
-      contentType = "reel"; 
-    } else if (url.includes("facebook.com") || url.includes("fb.watch") || url.includes("fb.com")) {
-      platform = "facebook";
-      if (url.includes("/reel/")) contentType = "reel";
-      else if (url.includes("/video") || url.includes("watch") || url.includes("fb.watch")) contentType = "video";
-      else contentType = "post";
-    }
-    
-    const { error } = await supabase.from("social_content").insert({
+    let table = "social_content";
+    let payload: any = {
       id: crypto.randomUUID(),
       user_id: user.id,
-      content_url: newUrl.trim(),
-      title: newTitle.trim() || null,
-      platform: platform,
-      content_type: contentType,
       is_public: true
-    } as any);
+    };
+
+    let platform = "web";
+    let contentType = "post";
+
+    if (lowerUrl.includes("youtube.com") || lowerUrl.includes("youtu.be")) {
+      platform = "youtube";
+      contentType = lowerUrl.includes("shorts") ? "reel" : "video";
+      payload.content_url = url;
+      payload.title = newTitle.trim() || null;
+      payload.platform = platform;
+      payload.content_type = contentType;
+    } else if (lowerUrl.includes("instagram.com")) {
+      if (lowerUrl.includes("/reel/") || lowerUrl.includes("/reels/")) {
+        platform = "instagram";
+        contentType = "reel";
+        payload.content_url = url;
+        payload.title = newTitle.trim() || null;
+        payload.platform = platform;
+        payload.content_type = contentType;
+      } else {
+        // 🔥 TRUCO: Es un post de Instagram, lo tratamos 100% como Foto (Va a la tabla photos) 🔥
+        table = "photos";
+        payload.image_url = url;
+        payload.caption = newTitle.trim() || null;
+        payload.is_apify = false; // El proxy extraerá la imagen automáticamente
+        
+        // 🔥 ARREGLO DEL ERROR: La tabla 'photos' no tiene columna 'is_public' 🔥
+        delete payload.is_public;
+      }
+    } else if (lowerUrl.includes("tiktok.com")) {
+      platform = "tiktok";
+      contentType = "reel"; 
+      payload.content_url = url;
+      payload.title = newTitle.trim() || null;
+      payload.platform = platform;
+      payload.content_type = contentType;
+    } else if (lowerUrl.includes("facebook.com") || lowerUrl.includes("fb.watch") || lowerUrl.includes("fb.com")) {
+      platform = "facebook";
+      if (lowerUrl.includes("/reel/")) contentType = "reel";
+      else if (lowerUrl.includes("/video") || lowerUrl.includes("watch") || lowerUrl.includes("fb.watch")) contentType = "video";
+      else contentType = "post";
+      payload.content_url = url;
+      payload.title = newTitle.trim() || null;
+      payload.platform = platform;
+      payload.content_type = contentType;
+    } else {
+       payload.content_url = url;
+       payload.title = newTitle.trim() || null;
+       payload.platform = platform;
+       payload.content_type = contentType;
+    }
+    
+    // 🔥 SOLUCIÓN: as any para que TypeScript ignore el checkeo del nombre de la tabla 🔥
+    const { error } = await supabase.from(table as any).insert(payload);
     
     setAdding(false);
     
     if (error) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     } else {
-      toast({ title: "Añadido al Social Hub", description: `Clasificado como ${platform} ${contentType}` });
+      toast({ 
+        title: table === "photos" ? "Guardado como Imagen" : "Añadido al Social Hub", 
+        description: table === "photos" ? "Post de Instagram guardado exitosamente." : `Clasificado como ${platform} ${contentType}` 
+      });
       setNewUrl("");
       setNewTitle("");
       fetchContents();
@@ -229,7 +280,8 @@ export default function SocialContentTab({ profile, user, onEditNetworks, limits
     setIsRemoving(true);
     try {
       const table = contentToRemove.targetType === 'photo' ? 'photos' : 'social_content';
-      const { error } = await supabase.from(table).delete().eq("id", contentToRemove.id);
+      // 🔥 SOLUCIÓN: as any aquí también 🔥
+      const { error } = await supabase.from(table as any).delete().eq("id", contentToRemove.id);
       if (error) throw error;
       toast({ title: "Publicación eliminada", description: `El contenido ha sido borrado exitosamente.` });
       fetchContents();
@@ -243,7 +295,7 @@ export default function SocialContentTab({ profile, user, onEditNetworks, limits
 
   const filteredContents = contents.filter((c) => {
     if (activeFilter === "Todos") return true;
-    if (activeFilter === "Imágenes") return c.target_type === 'photo';
+    if (activeFilter === "Imágenes") return c.target_type === 'photo' || c.content_type === 'photo';
     if (activeFilter === "YouTube") return c.platform === 'youtube';
     if (activeFilter === "Instagram") return c.platform === 'instagram';
     if (activeFilter === "TikTok") return c.platform === 'tiktok';
@@ -341,7 +393,7 @@ export default function SocialContentTab({ profile, user, onEditNetworks, limits
           <div className="grid grid-cols-[repeat(auto-fit,minmax(140px,1fr))] gap-4">
             {filteredContents.map(c => {
               const borderStyle = isVideoItem(c) ? "border-[#ff6b00]/50 hover:border-[#ff6b00]" : "border-[#00f0ff]/50 hover:border-[#00f0ff]";
-              const destRoute = c.target_type === 'photo' ? `/social/fotos?post=${c.id}` : `/social/reels?post=${c.id}`;
+              const destRoute = (c.target_type === 'photo' || c.content_type === 'photo') ? `/social/fotos?post=${c.id}` : `/social/reels?post=${c.id}`;
 
               return (
                 <div 
