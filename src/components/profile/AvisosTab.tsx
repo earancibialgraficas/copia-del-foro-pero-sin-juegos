@@ -7,13 +7,16 @@ import { getAvatarBorderStyle, getNameStyle } from "@/lib/profileAppearance";
 import { useAuth } from "@/hooks/useAuth";
 import { useFriendIds } from "@/hooks/useFriendIds";
 import { MEMBERSHIP_LIMITS, MembershipTier } from "@/lib/membershipLimits";
+import { supabase } from "@/integrations/supabase/client"; // 🔥 Agregado para el GPS
 
 const typeConfig: Record<string, { icon: React.ReactNode; color: string }> = {
   friend_request: { icon: <UserPlus className="w-3.5 h-3.5" />, color: "text-neon-cyan" },
   friend_accepted: { icon: <UserPlus className="w-3.5 h-3.5" />, color: "text-neon-green" },
   follow: { icon: <Heart className="w-3.5 h-3.5" />, color: "text-neon-magenta" },
   comment: { icon: <MessageSquare className="w-3.5 h-3.5" />, color: "text-neon-green" },
-  comment_reel: { icon: <MessageSquare className="w-3.5 h-3.5" />, color: "text-neon-cyan" }, // Nuevo tipo añadido
+  comment_reel: { icon: <MessageSquare className="w-3.5 h-3.5" />, color: "text-neon-cyan" },
+  comment_post: { icon: <MessageSquare className="w-3.5 h-3.5" />, color: "text-neon-cyan" },
+  reply_post: { icon: <MessageSquare className="w-3.5 h-3.5" />, color: "text-neon-green" },
   mention: { icon: <Users className="w-3.5 h-3.5" />, color: "text-neon-orange" },
   achievement: { icon: <Trophy className="w-3.5 h-3.5" />, color: "text-neon-yellow" },
   general: { icon: <Star className="w-3.5 h-3.5" />, color: "text-muted-foreground" },
@@ -52,26 +55,64 @@ const getTimeAgo = (dateString: string) => {
 export default function AvisosTab({ notifications, pendingRequests, handleMarkAsRead, handleClearNotifications, handleAcceptRequest, handleRejectRequest }: any) {
   const { user, profile: currentUserProfile, roles: currentUserRoles, isAdmin, isMasterWeb } = useAuth();
   const { friendIds } = useFriendIds(user?.id);
-  const navigate = useNavigate(); // Redireccionador
+  const navigate = useNavigate(); 
 
   const isCurrentUserStaff = isMasterWeb || isAdmin || (currentUserRoles || []).includes("moderator");
   const currentUserTier = (currentUserProfile?.membership_tier?.toLowerCase() || 'novato') as MembershipTier;
   const currentUserLimits = isCurrentUserStaff ? MEMBERSHIP_LIMITS.staff : MEMBERSHIP_LIMITS[currentUserTier];
   const reachedFriendLimit = !isCurrentUserStaff && friendIds.length >= currentUserLimits.maxFriends;
 
-  // Lógica para enviar al usuario al sitio correcto
-  const handleNotificationClick = (notif: any) => {
+  // 🔥 Ahora esta función es asíncrona para poder averiguar la ruta exacta 🔥
+  const handleNotificationClick = async (notif: any) => {
     handleMarkAsRead(notif.id);
 
     if (!notif.related_id) return; 
 
+    if (typeof notif.related_id === "string" && (notif.related_id.startsWith("/") || notif.related_id.startsWith(window.location.origin))) {
+      const url = new URL(notif.related_id, window.location.origin);
+      navigate(url.pathname + url.search);
+      return;
+    }
+
     if (notif.type === "comment_reel") {
-      navigate(`/social/reels?post=${notif.related_id}`);
+      const [postId, commentId] = String(notif.related_id).split("|");
+      navigate(`/social/reels?post=${postId}${commentId ? `&comment=${commentId}` : ""}`);
     } else if (notif.type === "comment_photo" || notif.type === "comment") {
-      navigate(`/muro?post=${notif.related_id}`);
-    } else if (notif.type === "comment_post") {
-      navigate(`/?post=${notif.related_id}`);
-    } else if (notif.type === "friend_accepted" || notif.type === "follow") {
+      const [postId, commentId] = String(notif.related_id).split("|");
+      navigate(`/social/fotos?post=${postId}${commentId ? `&comment=${commentId}` : ""}`);
+    } else if (notif.type === "comment_post" || notif.type === "reply_post") {
+      
+      let pId = notif.related_id;
+      let cId = null;
+      if (notif.related_id.includes("|")) {
+        const parts = notif.related_id.split("|");
+        pId = parts[0];
+        cId = parts[1];
+      }
+      
+      // GPS: Le preguntamos a la base de datos en qué categoría está este post
+      const { data } = await supabase.from("posts").select("category").eq("id", pId).maybeSingle();
+      let basePath = "/gaming-anime/foro"; // Por defecto
+      
+      if (data?.category) {
+        const cat = data.category;
+        if (cat === "gaming-anime-foro") basePath = "/gaming-anime/foro";
+        else if (cat === "gaming-anime-anime") basePath = "/gaming-anime/anime";
+        else if (cat === "gaming-anime-gaming") basePath = "/gaming-anime/gaming";
+        else if (cat === "arcade-consejos") basePath = "/arcade/consejos";
+        else if (cat === "gaming-anime-creador") basePath = "/gaming-anime/creador";
+        else if (cat === "motociclismo-riders") basePath = "/motociclismo/riders";
+        else if (cat === "motociclismo-taller") basePath = "/motociclismo/taller";
+        else if (cat === "motociclismo-rutas") basePath = "/motociclismo/rutas";
+        else if (cat === "mercado-gaming") basePath = "/mercado/gaming";
+        else if (cat === "mercado-motor") basePath = "/mercado/motor";
+      }
+
+      // Te enviamos a la URL milimétricamente exacta
+      if (cId) navigate(`${basePath}?post=${pId}&comment=${cId}`);
+      else navigate(`${basePath}?post=${pId}`);
+      
+    } else if (notif.type === "friend_accepted" || notif.type === "follow" || notif.type === "friend_request") {
       navigate(`/usuario/${notif.related_id}`);
     }
   };

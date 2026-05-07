@@ -1,3 +1,4 @@
+import { handleMembershipError } from "@/components/UpgradeModal";
 import { useState, useEffect } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import { createPortal } from "react-dom";
@@ -8,6 +9,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 import RoleBadge from "@/components/RoleBadge";
+import MembershipBadge from "@/components/MembershipBadge";
 import { getAvatarBorderStyle, getNameStyle, getRoleStyle } from "@/lib/profileAppearance";
 import { useFriendIds } from "@/hooks/useFriendIds";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
@@ -233,6 +235,7 @@ export default function PublicProfilePage() {
       if (reachedFriendLimit) { toast({ title: "Límite Alcanzado", variant: "destructive" }); return; }
       const { error } = await supabase.from("friend_requests").insert({ sender_id: user.id, receiver_id: userId } as any);
       if (!error) { setFriendStatus("pending_sent"); toast({ title: "Solicitud enviada" }); }
+      else handleMembershipError(error);
     } else if (friendStatus === "pending_received") {
       if (reachedFriendLimit) { toast({ title: "Límite Alcanzado", variant: "destructive" }); return; }
       const { error } = await supabase.from("friend_requests").update({ status: "accepted" } as any).eq("sender_id", userId).eq("receiver_id", user.id);
@@ -305,7 +308,7 @@ export default function PublicProfilePage() {
   };
 
   return (
-    <div className="space-y-4 animate-fade-in max-w-[1200px] mx-auto px-4 pb-20 relative">
+    <div className="space-y-4 animate-fade-in w-full min-w-0 px-2 sm:px-4 pb-20 relative">
       
       <div className="bg-card border border-neon-cyan/30 rounded p-6 shadow-lg">
         <div className="flex flex-col md:flex-row items-center md:items-start gap-6">
@@ -319,7 +322,7 @@ export default function PublicProfilePage() {
             </div>
             <p className="text-sm text-muted-foreground font-body italic mb-3">"{profile.bio || "Este usuario prefiere mantener el misterio..."}"</p>
             <div className="flex flex-wrap items-center justify-center md:justify-start gap-4">
-               <span className="text-[10px] font-pixel text-neon-yellow flex items-center gap-1" style={getRoleStyle(profile.color_role)}><Star className="w-3.5 h-3.5" /> {displayTier}</span>
+               {isStaffVisual ? <span className="text-[10px] font-pixel text-neon-magenta flex items-center gap-1" style={getRoleStyle(profile.color_staff_role)}><Star className="w-3.5 h-3.5" /> STAFF</span> : <MembershipBadge tier={profile.membership_tier} size="md" colorRole={profile.color_role} />}
                <span className="text-[10px] font-body text-neon-green flex items-center gap-1"><Trophy className="w-3.5 h-3.5" /> {Math.max(profile.total_score, totalScoreValue).toLocaleString()} pts</span>
                <span className="text-[10px] font-body text-muted-foreground flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> Miembro desde {memberSince}</span>
             </div>

@@ -1,3 +1,4 @@
+import { handleMembershipError } from "@/components/UpgradeModal";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { Camera, ThumbsDown, ThumbsUp, Flag, Image as ImageIcon, Globe, Users, Trash2, MessageSquare, X, Reply, Send, Maximize2, Bookmark, ExternalLink, Zap, Loader2, Ban, Shield, Copy, User as UserIcon, Flame, Sparkles, Edit2, ChevronDown } from "lucide-react";
@@ -12,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import ReportModal from "@/components/ReportModal";
+import CommentModMenu from "@/components/CommentModMenu";
 import { MEMBERSHIP_LIMITS, MembershipTier } from "@/lib/membershipLimits";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
@@ -212,12 +214,23 @@ function ExpandedPhotoModal({ photo, onClose, onReaction, onHide, onEdit, onDele
       return;
     }
     try {
-      const { error } = await supabase.from("social_comments").insert({ 
+      const { data: newComment, error } = await supabase.from("social_comments").insert({ 
         user_id: user.id, content_id: photo.id, content: replyTo ? `@${replyTo.name} ${commentText.trim()}` : commentText.trim(), parent_id: replyTo?.id || null 
-      } as any);
+      } as any).select().single();
       if (error) throw error;
+      const targetUserId = replyTo ? comments.find((c: any) => c.id === replyTo.id)?.user_id : photo.user_id;
+      if (targetUserId && targetUserId !== user.id && newComment?.id) {
+        await supabase.from("notifications").insert({
+          id: crypto.randomUUID(), user_id: targetUserId, type: "comment_photo",
+          title: replyTo ? "Nueva respuesta" : "Nuevo comentario",
+          body: `${user.email || "Alguien"} ${replyTo ? "respondió un comentario" : "comentó tu imagen"}.`,
+          related_id: `${photo.id}|${newComment.id}`,
+        } as any);
+      }
       setCommentText(""); setReplyTo(null); fetchComments();
-    } catch (e) { toast({ title: "Error al comentar", variant: "destructive" }); }
+    } catch (e: any) {
+      if (!handleMembershipError(e)) toast({ title: "Error", description: e?.message || "Error al comentar", variant: "destructive" });
+    }
   };
 
   const handleDeleteComment = async (commentId: string) => {
@@ -305,6 +318,7 @@ function ExpandedPhotoModal({ photo, onClose, onReaction, onHide, onEdit, onDele
                           </button>
                         )}
                         {isStaff && <button onClick={() => handleDeleteComment(c.id)} className="text-[8px] text-muted-foreground hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity">Eliminar</button>}
+                        <CommentModMenu commentId={c.id} authorId={c.user_id} authorName={c.display_name} table="social_comments" onDeleted={(id) => setComments(prev => prev.filter(cc => cc.id !== id))} />
                       </div>
                     </div>
                   </div>
@@ -525,7 +539,7 @@ export default function PhotoWallPage() {
     const { error } = await supabase.from("photos").insert({ id: crypto.randomUUID(), user_id: user.id, image_url: finalUrl, caption: caption.trim(), is_apify: usedApify } as any);
 
     if (!error) { setCaption(""); setImageUrl(""); setShowUpload(false); fetchContent(true, sort); toast({ title: "Foto subida con éxito" }); } 
-    else { toast({ title: "Error al publicar", variant: "destructive" }); }
+    else if (!handleMembershipError(error)) { toast({ title: "Error al publicar", description: error.message, variant: "destructive" }); }
     
     setUploading(false);
   };

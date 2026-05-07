@@ -131,6 +131,7 @@ export type Database = {
           event_time: string | null
           event_type: string
           id: string
+          image_storage_url: string | null
           image_url: string | null
           location: string | null
           title: string
@@ -144,6 +145,7 @@ export type Database = {
           event_time?: string | null
           event_type: string
           id?: string
+          image_storage_url?: string | null
           image_url?: string | null
           location?: string | null
           title: string
@@ -157,6 +159,7 @@ export type Database = {
           event_time?: string | null
           event_type?: string
           id?: string
+          image_storage_url?: string | null
           image_url?: string | null
           location?: string | null
           title?: string
@@ -806,6 +809,24 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      extract_system_link: { Args: { p_content: string }; Returns: string }
+      forum_post_route: {
+        Args: { p_comment_id?: string; p_post_id: string }
+        Returns: string
+      }
+      get_membership_limits:
+        | {
+            Args: { _user_id: string }
+            Returns: {
+              error: true
+            } & "Could not choose the best candidate function between: public.get_membership_limits(_user_id => text), public.get_membership_limits(_user_id => uuid). Try renaming the parameters or the function itself in the database so function overloading can be resolved"[]
+          }
+        | {
+            Args: { _user_id: string }
+            Returns: {
+              error: true
+            } & "Could not choose the best candidate function between: public.get_membership_limits(_user_id => text), public.get_membership_limits(_user_id => uuid). Try renaming the parameters or the function itself in the database so function overloading can be resolved"[]
+          }
       has_role: {
         Args: {
           _role: Database["public"]["Enums"]["app_role"]
@@ -813,9 +834,25 @@ export type Database = {
         }
         Returns: boolean
       }
+      manage_user_role: {
+        Args: {
+          p_action: string
+          p_role: Database["public"]["Enums"]["app_role"]
+          p_target_user_id: string
+        }
+        Returns: undefined
+      }
       recalculate_total_score: {
         Args: { p_user_id: string }
         Returns: undefined
+      }
+      search_user_by_email: {
+        Args: { email_query: string }
+        Returns: {
+          display_name: string
+          membership_tier: string
+          user_id: string
+        }[]
       }
       send_staff_report: {
         Args: {

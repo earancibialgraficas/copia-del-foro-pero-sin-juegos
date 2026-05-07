@@ -1,3 +1,4 @@
+import { handleMembershipError } from "@/components/UpgradeModal";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useLocation, Link } from "react-router-dom";
 import { createPortal } from "react-dom";
@@ -11,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { getAvatarBorderStyle, getNameStyle } from "@/lib/profileAppearance";
 import { useToast } from "@/hooks/use-toast";
 import ReportModal from "@/components/ReportModal";
+import CommentModMenu from "@/components/CommentModMenu";
 import { MEMBERSHIP_LIMITS, MembershipTier } from "@/lib/membershipLimits";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 
@@ -358,14 +360,25 @@ function SnapCard({
     }
     
     try {
-      const { error } = await supabase.from("social_comments").insert({ 
+      const { data: newComment, error } = await supabase.from("social_comments").insert({ 
         user_id: user.id, content_id: item.id, content: replyTo ? `@${replyTo.name} ${commentText.trim()}` : commentText.trim(), parent_id: replyTo?.id || null 
-      });
+      }).select().single();
       if (error) throw error;
+      const targetUserId = replyTo ? comments.find(c => c.id === replyTo.id)?.user_id : item.user_id;
+      if (targetUserId && targetUserId !== user.id && newComment?.id) {
+        await supabase.from("notifications").insert({
+          id: crypto.randomUUID(),
+          user_id: targetUserId,
+          type: "comment_reel",
+          title: replyTo ? "Nueva respuesta" : "Nuevo comentario",
+          body: `${profile?.display_name || "Alguien"} ${replyTo ? "respondió un comentario" : "comentó tu video"}.`,
+          related_id: `${item.id}|${newComment.id}`,
+        } as any);
+      }
       setCommentText(""); setReplyTo(null);
       fetchComments();
     } catch (e: any) {
-      toast({ title: "Error", description: "No se pudo publicar tu comentario.", variant: "destructive" });
+      if (!handleMembershipError(e)) toast({ title: "Error", description: "No se pudo publicar tu comentario.", variant: "destructive" });
     }
   };
 
@@ -786,6 +799,7 @@ function SnapCard({
                       </button>
                     )}
                     {(isStaff || user?.id === c.user_id) && <button onClick={() => handleDeleteComment(c.id)} className="text-muted-foreground hover:text-destructive" title="Eliminar"><Trash2 className="w-2.5 h-2.5" /></button>}
+                    <CommentModMenu commentId={c.id} authorId={c.user_id} authorName={c.display_name} table="social_comments" onDeleted={(id) => setComments(prev => prev.filter(cc => cc.id !== id))} />
                   </div>
                 </div>
               ))}
